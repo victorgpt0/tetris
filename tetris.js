@@ -6,12 +6,6 @@ const shapes = [
         [0,0,0,0]
     ],
     [
-        [0,0,1,0],
-        [0,0,1,0],
-        [0,0,1,0],
-        [0,0,1,0]
-    ],
-    [
         [1,0,0],
         [1,1,1],
         [0,0,0]
@@ -44,7 +38,6 @@ const shapes = [
 
 const colors = [
     'cyan',
-    'white',
     'blue',
     'orange',
     'yellow',
@@ -79,7 +72,8 @@ const keyMap = {
     ArrowDown: 'moveDown',
     ArrowUp: 'rotate',
     ' ': 'drop',
-    r: 'restart'
+    r: 'restart',
+    Escape: 'pause'
 };
 
 const grid_width = block_size * grid_cols;
@@ -93,6 +87,13 @@ const canvas_width = grid_width + sidebar_width + sidebar_border;
 const canvas_height = grid_height;
 
 const block_empty = -1;
+
+const INPUT_STATE_INITIAL = 0;
+const INPUT_STATE_ACTIVE = 1;     // <--- Added this to fix the ReferenceError!
+const INPUT_STATE_CHARGING = 2;
+const INPUT_STATE_REPEATING = 3;
+const INPUT_REPEAT_THRESHOLD = 200; // ms before a key starts repeating
+const INPUT_REPEAT_INTERVAL = 50;   // ms velocity of repeat inputs
 
 function initCanvas(){
     const canvas = document.getElementById('tetris');
@@ -128,6 +129,7 @@ function getInitialState(){
 
     return {
         isGameOver: false,
+        isPaused: false,
         score: 0,
         gravity: {
             progress: 0,
@@ -139,6 +141,176 @@ function getInitialState(){
     };
 }   
 
+function canGridFitShape(grid, shape, shapeX, shapeY){
+    return shape.every((row, i) => {
+        const gridY = shapeY + i;
+        
+        return row.every((isSolid, j) => {
+            if(!isSolid) return true;
+
+            if(gridY >= grid.length) return false;
+
+            const gridX = shapeX + j;
+            if(gridX < 0 || gridX >= grid[0].length) return false;
+            
+            return grid[gridY][gridX] === block_empty;
+        });
+    });
+}
+
+function moveCurrentPiece(grid,currentPiece, dx, dy){
+    const {shape, position} = currentPiece;
+    const {x, y} = position;
+    const canMove = canGridFitShape(grid, shape, x + dx, y + dy);
+
+    if(canMove) {
+        position.x += dx;
+        position.y += dy;
+    }
+
+    return canMove;
+}
+
+function attachToGrid(grid, currentPiece){
+    const {shape, shapeId, position} = currentPiece;
+    const {x, y} = position;
+
+    shape.forEach((row, i) => {
+        row.forEach((isSolid, j) => {
+            if(isSolid){
+                grid[y + i][x + j] = shapeId;
+            }
+        });
+    });
+}
+
+function clearFullLines(grid){
+    let linesCleared = 0;
+
+    for(let i = grid.length - 1; i >= 0; i--){
+        if(grid[i].every(cell => cell !== block_empty)){
+            grid.splice(i, 1);
+            grid.unshift(Array(grid[0].length).fill(block_empty));
+            linesCleared++;
+            i++;
+        }
+    }
+
+    return linesCleared;
+}
+
+function handleCurrentPieceLanding(state){
+    attachToGrid(state.grid, state.currentPiece);
+    const linesCleared = clearFullLines(state.grid);
+
+    if(linesCleared > 0){
+        state.score += linesCleared * 100;
+    }
+
+    const newShapeId = state.nextShapeId;
+    state.currentPiece = createCurrentPiece(newShapeId);
+    state.nextShapeId = getRandomShapeId();
+
+    if(!canGridFitShape(state.grid, state.currentPiece.shape, state.currentPiece.position.x, state.currentPiece.position.y)){
+        state.isGameOver = true;
+    }
+}
+
+function moveCurrentPieceDown(state){
+    state.gravity.progress = 0;
+
+    const canMoveDown = moveCurrentPiece(state.grid, state.currentPiece, 0, 1);
+
+    if(!canMoveDown){
+        handleCurrentPieceLanding(state);
+    }
+
+    return canMoveDown;
+}
+
+function rotate(shape){
+    return Array.from({ length: shape[0].length }, (_, i) =>
+        shape.map(row => row[i]).reverse()
+    );
+}
+
+function rotateCurrentPiece(state){
+    const { grid, currentPiece } = state;
+    const rotatedShape = rotate(currentPiece.shape);
+
+    if(canGridFitShape(grid, rotatedShape, currentPiece.position.x, currentPiece.position.y)){
+        currentPiece.shape = rotatedShape;
+    }
+}
+
+function resetGameState(state){
+    Object.assign(state, getInitialState());
+}
+
+function updateCurrentPiece(state, inputs, dt){
+    const { grid, currentPiece } = state;
+
+    const isInputActive = (inputType) => handleInputState(inputs[inputType], dt);
+
+    if(isInputActive('moveLeft')){
+        moveCurrentPiece(grid, currentPiece, -1, 0);
+    }
+    if(isInputActive('moveRight')){
+        moveCurrentPiece(grid, currentPiece, 1, 0);
+    }
+    if(isInputActive('moveDown')){
+        moveCurrentPiece(grid, currentPiece, 0, 1);
+    }
+    if(isInputActive('rotate')){
+        rotateCurrentPiece(state);
+    }
+    if(isInputActive('drop')){
+        while(moveCurrentPieceDown(state)){}
+    }
+}
+
+function updateGravity(state, dt){
+    state.gravity.speed += gravity_acceleration * dt;
+    state.gravity.progress += state.gravity.speed * dt;
+
+
+    if(state.gravity.progress >= gravity_threshold){
+        moveCurrentPieceDown(state);
+    }
+}
+
+function handleInputState(input, dt){
+    if(!input){
+        return false;
+    }
+
+    input.timer += dt;
+
+    switch(input.state){
+        case INPUT_STATE_INITIAL:
+            input.state = INPUT_STATE_ACTIVE;
+            return true;
+        
+        case INPUT_STATE_CHARGING:
+            const isCharged = input.timer >= INPUT_REPEAT_THRESHOLD;
+            if(isCharged){
+                input.state = INPUT_STATE_REPEATING;
+                input.timer = 0;
+            }
+
+            return isCharged;
+
+        case INPUT_STATE_REPEATING:
+            const shouldRepeat = input.timer >= INPUT_REPEAT_INTERVAL;
+            if(shouldRepeat){
+                input.timer = 0;
+            }
+
+            return shouldRepeat;
+    }
+
+}
+
 function update(state, inputs, dt){
     if(state.isGameOver){
         if(inputs.restart){
@@ -147,8 +319,14 @@ function update(state, inputs, dt){
         return;
     }
 
-    // Handle inputs and update game state
-    // (This function will be implemented in the next steps)
+    if(handleInputState(inputs.pause, dt)){
+        state.isPaused = !state.isPaused;
+    }
+
+    if(state.isPaused) return;
+
+    updateCurrentPiece(state, inputs, dt);
+    updateGravity(state, dt);
 }
 
 function drawBlock(ctx, x, y, color){
@@ -169,6 +347,7 @@ function drawShape(ctx, shape, colorId, x, y){
 }
 
 function render(ctx, state){
+    ctx.clearRect(0, 0, canvas_width, canvas_height);
     ctx.fillStyle = block_bg;
     ctx.fillRect(0, 0, canvas_width, canvas_height);
 
@@ -178,9 +357,9 @@ function render(ctx, state){
         for(let j = 0; j < grid[0].length; j++){
             const colorId = grid[i][j];
 
-            const color = colorId === block_empty ? color_empty_block : colors[shapeId];
+            const color = colorId === block_empty ? color_empty_block : colors[colorId];
             
-            drawBlock(ctx, color, j * block_size, i * block_size);
+            drawBlock(ctx, j * block_size, i * block_size, color);
         }
     }
 
@@ -212,6 +391,17 @@ function render(ctx, state){
     ctx.fillText('Score', sidebar_content_x, sidebar_content_y + 5 * block_size);
     ctx.fillText(score, sidebar_content_x, sidebar_content_y + 6 * block_size);
 
+    if(state.isPaused){
+        ctx.fillStyle = color_game_over_overlay;
+        ctx.fillRect(0, 0, grid_width, grid_height);
+
+        ctx.fillStyle = color_font;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 48px monospace';
+        ctx.fillText('PAUSED', grid_width / 2, grid_height / 2);
+    }
+
     if(state.isGameOver){
         ctx.fillStyle = color_game_over_overlay;
         ctx.fillRect(0, 0, grid_width, grid_height);
@@ -237,9 +427,9 @@ function collectInputs(inputs){
         }
     }
 
-    window.addEventListener('keydown', (e) => handleKeyEvent(e, true));
+    window.addEventListener('keydown', (e) => handleKeyEvent(e, {state: INPUT_STATE_INITIAL, timer: 0}));
 
-    window.addEventListener('keyup', (e) => handleKeyEvent(e, false));
+    window.addEventListener('keyup', (e) => handleKeyEvent(e, undefined));
 }
 
 function main(){
@@ -249,7 +439,7 @@ function main(){
 
     collectInputs(inputs);
 
-    state.isGameOver = true;
+    // state.isGameOver = true;
 
     let previousTime = performance.now();
 
