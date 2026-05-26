@@ -1,3 +1,4 @@
+// Configs, Constants and Global Variables
 const shapes = [
     [
         [0,0,0,0],
@@ -95,67 +96,39 @@ const INPUT_STATE_REPEATING = 3;
 const INPUT_REPEAT_THRESHOLD = 200; // ms before a key starts repeating
 const INPUT_REPEAT_INTERVAL = 50;   // ms velocity of repeat inputs
 
-function initCanvas(){
-    const canvas = document.getElementById('tetris');
-    canvas.width = canvas_width;
-    canvas.height = canvas_height;
-    canvas.style.visibility = 'visible';
+const buttons = [
+    { label: '◀', input: 'moveLeft', x: sidebar_content_x, y: block_size * 9, w: 70, h: 60, color: '#555' },
+    { label: '▶', input: 'moveRight', x: sidebar_content_x + 70, y: block_size * 9, w: 70, h: 60, color: '#555' },
+    { label: '▼', input: 'moveDown', x: sidebar_content_x + 35, y: block_size * 10, w: 70, h: 60, color: '#555' },
+    { label: '↻', input: 'rotate', x: sidebar_content_x, y: block_size * 12, w: 70, h: 70, color: '#555' },
+    { label: '↧', input: 'drop', x: sidebar_content_x + 70, y: block_size * 12, w: 70, h: 70, color: '#555' },
+    { label: 'Pause',   input: 'pause',   x: sidebar_content_x,    y: block_size * 16, w: 150, h: 50, color: '#f39c12' },
+    { label: 'Restart', input: 'restart', x: sidebar_content_x,    y: block_size * 17.5, w: 150, h: 50, color: '#d33' }
+];
 
-    return canvas.getContext('2d');
-}
 
-function getRandomIndex(n){
-    return Math.floor(Math.random() * n);
-}
+// 1. APPLICATION STAGE (CPU Game Logic, Physics, and Memory Matrices)
+// This updates our positional tracking vectors, handles time-step physics (gravity), 
+// and manipulates abstract coordinate grids stored purely in internal computer RAM.
 
-function getRandomShapeId(){
-    return getRandomIndex(shapes.length);
-}
-
-function createCurrentPiece(shapeId){
-    const shape = shapes[shapeId];
-    return {
-        shapeId,
-        shape,
-        position: {
-            x: getRandomIndex(grid_cols - shape[0].length + 1),
-            y: 0
+function update(state, inputs, dt){
+    if(state.isGameOver){
+        if(inputs.restart || inputs.moveLeft || inputs.moveRight || inputs.moveDown || inputs.rotate || inputs.drop || inputs.pause){
+            Object.assign(state, getInitialState());
+            Object.keys(inputs).forEach(key => inputs[key] = undefined);
         }
-    };
-}
+        return;
+    }
 
-function getInitialState(){
-    const initialShapeId = getRandomShapeId();
+    if(handleInputState(inputs.pause, dt)){
+        state.isPaused = !state.isPaused;
+        inputs.pause = undefined; // Reset pause input to prevent immediate re-toggling
+    }
 
-    return {
-        isGameOver: false,
-        isPaused: false,
-        score: 0,
-        gravity: {
-            progress: 0,
-            speed: gravity_speed
-        },
-        currentPiece: createCurrentPiece(initialShapeId),
-        nextShapeId: getRandomShapeId(),
-        grid: Array.from({ length: grid_rows }, () => Array(grid_cols).fill(block_empty))
-    };
-}   
+    if(state.isPaused) return;
 
-function canGridFitShape(grid, shape, shapeX, shapeY){
-    return shape.every((row, i) => {
-        const gridY = shapeY + i;
-        
-        return row.every((isSolid, j) => {
-            if(!isSolid) return true;
-
-            if(gridY >= grid.length) return false;
-
-            const gridX = shapeX + j;
-            if(gridX < 0 || gridX >= grid[0].length) return false;
-            
-            return grid[gridY][gridX] === block_empty;
-        });
-    });
+    updateCurrentPiece(state, inputs, dt);
+    updateGravity(state, dt);
 }
 
 function moveCurrentPiece(grid,currentPiece, dx, dy){
@@ -171,19 +144,6 @@ function moveCurrentPiece(grid,currentPiece, dx, dy){
     return canMove;
 }
 
-function attachToGrid(grid, currentPiece){
-    const {shape, shapeId, position} = currentPiece;
-    const {x, y} = position;
-
-    shape.forEach((row, i) => {
-        row.forEach((isSolid, j) => {
-            if(isSolid){
-                grid[y + i][x + j] = shapeId;
-            }
-        });
-    });
-}
-
 function clearFullLines(grid){
     let linesCleared = 0;
 
@@ -197,6 +157,28 @@ function clearFullLines(grid){
     }
 
     return linesCleared;
+}
+
+function updateCurrentPiece(state, inputs, dt){
+    const { grid, currentPiece } = state;
+
+    const isInputActive = (inputType) => handleInputState(inputs[inputType], dt);
+
+    if(isInputActive('moveLeft')){
+        moveCurrentPiece(grid, currentPiece, -1, 0);
+    }
+    if(isInputActive('moveRight')){
+        moveCurrentPiece(grid, currentPiece, 1, 0);
+    }
+    if(isInputActive('moveDown')){
+        moveCurrentPiece(grid, currentPiece, 0, 1);
+    }
+    if(isInputActive('rotate')){
+        rotateCurrentPiece(state);
+    }
+    if(isInputActive('drop')){
+        while(moveCurrentPieceDown(state)){}
+    }
 }
 
 function handleCurrentPieceLanding(state){
@@ -228,55 +210,34 @@ function moveCurrentPieceDown(state){
     return canMoveDown;
 }
 
-function rotate(shape){
-    return Array.from({ length: shape[0].length }, (_, i) =>
-        shape.map(row => row[i]).reverse()
-    );
+function canGridFitShape(grid, shape, shapeX, shapeY){
+    return shape.every((row, i) => {
+        const gridY = shapeY + i;
+        
+        return row.every((isSolid, j) => {
+            if(!isSolid) return true;
+
+            if(gridY >= grid.length) return false;
+
+            const gridX = shapeX + j;
+            if(gridX < 0 || gridX >= grid[0].length) return false;
+            
+            return grid[gridY][gridX] === block_empty;
+        });
+    });
 }
 
-function rotateCurrentPiece(state){
-    const { grid, currentPiece } = state;
-    const rotatedShape = rotate(currentPiece.shape);
+function attachToGrid(grid, currentPiece){
+    const {shape, shapeId, position} = currentPiece;
+    const {x, y} = position;
 
-    if(canGridFitShape(grid, rotatedShape, currentPiece.position.x, currentPiece.position.y)){
-        currentPiece.shape = rotatedShape;
-    }
-}
-
-function resetGameState(state){
-    Object.assign(state, getInitialState());
-}
-
-function updateCurrentPiece(state, inputs, dt){
-    const { grid, currentPiece } = state;
-
-    const isInputActive = (inputType) => handleInputState(inputs[inputType], dt);
-
-    if(isInputActive('moveLeft')){
-        moveCurrentPiece(grid, currentPiece, -1, 0);
-    }
-    if(isInputActive('moveRight')){
-        moveCurrentPiece(grid, currentPiece, 1, 0);
-    }
-    if(isInputActive('moveDown')){
-        moveCurrentPiece(grid, currentPiece, 0, 1);
-    }
-    if(isInputActive('rotate')){
-        rotateCurrentPiece(state);
-    }
-    if(isInputActive('drop')){
-        while(moveCurrentPieceDown(state)){}
-    }
-}
-
-function updateGravity(state, dt){
-    state.gravity.speed += gravity_acceleration * dt;
-    state.gravity.progress += state.gravity.speed * dt;
-
-
-    if(state.gravity.progress >= gravity_threshold){
-        moveCurrentPieceDown(state);
-    }
+    shape.forEach((row, i) => {
+        row.forEach((isSolid, j) => {
+            if(isSolid){
+                grid[y + i][x + j] = shapeId;
+            }
+        });
+    });
 }
 
 function handleInputState(input, dt){
@@ -311,23 +272,42 @@ function handleInputState(input, dt){
 
 }
 
-function update(state, inputs, dt){
-    if(state.isGameOver){
-        if(inputs.restart){
-            Object.assign(state, getInitialState());
-        }
-        return;
+function updateGravity(state, dt){
+    state.gravity.speed += gravity_acceleration * dt;
+    state.gravity.progress += state.gravity.speed * dt;
+
+
+    if(state.gravity.progress >= gravity_threshold){
+        moveCurrentPieceDown(state);
     }
-
-    if(handleInputState(inputs.pause, dt)){
-        state.isPaused = !state.isPaused;
-    }
-
-    if(state.isPaused) return;
-
-    updateCurrentPiece(state, inputs, dt);
-    updateGravity(state, dt);
 }
+
+function resetGameState(state){
+    Object.assign(state, getInitialState());
+}
+
+// 2. GEOMETRY STAGE (Coordinate Transforms & Matrix Rotations)
+// Translates abstract, localized data definitions into screen coordinate domains.
+// Example: Multiplying array index configurations by 'block_size' vectors to find exact pixel points.
+
+function rotate(shape){
+    return Array.from({ length: shape[0].length }, (_, i) =>
+        shape.map(row => row[i]).reverse()
+    );
+}
+
+function rotateCurrentPiece(state){
+    const { grid, currentPiece } = state;
+    const rotatedShape = rotate(currentPiece.shape);
+
+    if(canGridFitShape(grid, rotatedShape, currentPiece.position.x, currentPiece.position.y)){
+        currentPiece.shape = rotatedShape;
+    }
+}
+
+// 3. RASTERIZATION STAGE (Converting Vectors to Screen Frame Pixels via GPU)
+// Communicates with WebGL / HTML Canvas drawing rendering contexts. 
+// Instructs hardware processors to map mathematical vector bounding regions directly to colored physical pixels.
 
 function drawBlock(ctx, x, y, color){
     ctx.fillStyle = color;
@@ -391,6 +371,21 @@ function render(ctx, state){
     ctx.fillText('Score', sidebar_content_x, sidebar_content_y + 5 * block_size);
     ctx.fillText(score, sidebar_content_x, sidebar_content_y + 6 * block_size);
 
+    buttons.forEach(btn => {
+        ctx.fillStyle = btn.color;
+        ctx.fillRect(btn.x, btn.y, btn.w, btn.h);
+
+        ctx.strokeStyle = btn.color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(btn.x, btn.y, btn.w, btn.h);
+
+        ctx.fillStyle = color_font;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 20px monospace';
+        ctx.fillText(btn.label, btn.x + btn.w / 2, btn.y + btn.h / 2);
+    });
+
     if(state.isPaused){
         ctx.fillStyle = color_game_over_overlay;
         ctx.fillRect(0, 0, grid_width, grid_height);
@@ -417,7 +412,58 @@ function render(ctx, state){
 
 }
 
-function collectInputs(inputs){
+
+// 4. Initialization and Main Game Loop
+// Sets up our HTML canvas and starts the recursive 'requestAnimationFrame' loop that drives our game updates and renders.
+
+function getRandomIndex(n){
+    return Math.floor(Math.random() * n);
+}
+
+function getRandomShapeId(){
+    return getRandomIndex(shapes.length);
+}
+
+function createCurrentPiece(shapeId){
+    const shape = shapes[shapeId];
+    return {
+        shapeId,
+        shape,
+        position: {
+            x: getRandomIndex(grid_cols - shape[0].length + 1),
+            y: 0
+        }
+    };
+}
+
+function getInitialState(){
+    const initialShapeId = getRandomShapeId();
+
+    return {
+        isGameOver: false,
+        isPaused: false,
+        score: 0,
+        gravity: {
+            progress: 0,
+            speed: gravity_speed
+        },
+        currentPiece: createCurrentPiece(initialShapeId),
+        nextShapeId: getRandomShapeId(),
+        grid: Array.from({ length: grid_rows }, () => Array(grid_cols).fill(block_empty))
+    };
+}   
+
+function initCanvas(){
+    const canvas = document.getElementById('tetris');
+    canvas.width = canvas_width;
+    canvas.height = canvas_height;
+    canvas.style.visibility = 'visible';
+
+    return canvas.getContext('2d');
+}
+
+
+function collectInputs(inputs, ctx){
     function handleKeyEvent(e, inputValue){
         if(e.repeat) return;
 
@@ -430,6 +476,39 @@ function collectInputs(inputs){
     window.addEventListener('keydown', (e) => handleKeyEvent(e, {state: INPUT_STATE_INITIAL, timer: 0}));
 
     window.addEventListener('keyup', (e) => handleKeyEvent(e, undefined));
+
+    function handlePointerDown(clientX, clientY){
+        const rect = ctx.canvas.getBoundingClientRect();
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+
+        const btn = buttons.find(b => 
+            x >= b.x && x <= b.x + b.w &&
+            y >= b.y && y <= b.y + b.h
+        );
+
+        if(btn){
+            inputs[btn.input] = {state: INPUT_STATE_INITIAL, timer: 0};
+        }
+    }
+
+    window.addEventListener('pointerdown', (e) => handlePointerDown(e.clientX, e.clientY));
+
+    function handlePointerUp() {
+        buttons.forEach(btn => {
+            inputs[btn.input] = undefined;
+        });
+    }
+
+    window.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevents mobile browser from double-tapping zoom behavior
+            const touch = e.touches[0];
+            handlePointerDown(touch.clientX, touch.clientY);
+    }, { passive: false });
+
+    window.addEventListener('touchend', () => {
+        handlePointerUp();
+    });
 }
 
 function main(){
@@ -437,7 +516,7 @@ function main(){
     const state = getInitialState();
     const inputs = {};
 
-    collectInputs(inputs);
+    collectInputs(inputs, ctx);
 
     // state.isGameOver = true;
 
@@ -457,4 +536,5 @@ function main(){
 
 }
 
+// Start the game
 main();
