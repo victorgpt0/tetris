@@ -479,8 +479,10 @@ function collectInputs(inputs, ctx){
 
     function handlePointerDown(clientX, clientY){
         const rect = ctx.canvas.getBoundingClientRect();
-        const x = clientX - rect.left;
-        const y = clientY - rect.top;
+        const scaleX = ctx.canvas.width / rect.width;
+        const scaleY = ctx.canvas.height / rect.height;
+        const x = (clientX - rect.left) * scaleX;
+        const y = (clientY - rect.top) * scaleY;
 
         const btn = buttons.find(b => 
             x >= b.x && x <= b.x + b.w &&
